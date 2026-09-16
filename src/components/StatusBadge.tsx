@@ -27,7 +27,7 @@ export function StatusBadge({
     <span
       className={cn(
         "inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
-        tones[tone] ?? tones.neutral,
+        tones[tone] ?? tones["neutral"],
         className,
       )}
     >

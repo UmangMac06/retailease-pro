@@ -15,8 +15,11 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { useQuery } from "@tanstack/react-query";
+
 import { cn } from "@/lib/utils";
-import { shop } from "@/data/demo";
+import { getShop } from "@/lib/retailease.functions";
+import { initialsOf } from "@/lib/format";
 
 const groups = [
   {
@@ -57,6 +60,18 @@ export function AppShell({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { data } = useQuery({
+    queryKey: ["shop"],
+    queryFn: () => getShop(),
+    staleTime: Infinity,
+  });
+  const shop = {
+    name: data?.name ?? "RetailEase",
+    owner: data?.owner ?? "Shop Owner",
+    role: data?.role ?? "Shop Owner",
+    initials: initialsOf(data?.owner ?? "Shop Owner"),
+    today: new Date().toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" }),
+  };
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">

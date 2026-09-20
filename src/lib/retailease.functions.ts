@@ -523,3 +523,378 @@ export const getReports = createServerFn({ method: "GET" }).handler(async () => 
     collected,
   };
 });
+
+/* ---------------------------------------------------------- transactions */
+
+async function inTransaction<T>(fn: (d: Db) => T): Promise<T> {
+  const d = await db();
+  d.exec("BEGIN");
+  try {
+    const result = fn(d);
+    d.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {
+      /* ignore rollback failure */
+    }
+    throw error;
+  }
+}
+
+function nextNumber(d: Db, table: string, column: string, prefix: string, start: number) {
+  const c = Number(d.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get()?.["c"] ?? 0);
+  let n = start + c;
+  while (d.prepare(`SELECT 1 AS x FROM ${table} WHERE ${column} = ?`).get(`${prefix}${n}`)) n += 1;
+  return `${prefix}${n}`;
+}
+
+function balanceOf(d: Db, customerId: number) {
+  return Number(
+    d
+      .prepare(
+        `SELECT COALESCE(SUM(CASE type WHEN 'debit' THEN amount ELSE -amount END), 0) AS v
+         FROM credit_transactions WHERE customer_id = ?`,
+      )
+      .get(customerId)?.["v"] ?? 0,
+  );
+}
+
+/* ----------------------------------------------------------- create sale */
+
+const saleInput = z.object({
+  customerId: z.number().nullable().default(null),
+  method: z.enum(["Cash", "UPI", "Bank"]).default("Cash"),
+  mode: z.enum(["paid", "credit", "partial"]).default("paid"),
+  amountPaid: z.number().min(0).default(0),
+  items: z
+    .array(
+      z.object({
+        productId: z.number({ invalid_type_error: "Select a product" }).int().positive("Select a product"),
+        quantity: z.number().positive("Quantity must be greater than zero"),
+      }),
+    )
+    .min(1, "Add at least one product"),
+});
+
+export const createSale = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => saleInput.parse(data))
+  .handler(async ({ data }) => {
+    return inTransaction((d) => {
+      if (data.customerId) {
+        const c = d.prepare("SELECT id FROM customers WHERE id = ?").get(data.customerId);
+        if (!c) throw new Error("Selected customer no longer exists");
+      }
+
+      const priced = data.items.map((item) => {
+        const p = d
+          .prepare("SELECT id, name, selling_price, stock FROM products WHERE id = ?")
+          .get(item.productId);
+        if (!p) throw new Error("Selected product no longer exists");
+        const stock = Number(p["stock"]);
+        if (item.quantity > stock) {
+          throw new Error(
+            `Not enough stock for ${p["name"]}. Only ${stock} left, ${item.quantity} requested.`,
+          );
+        }
+        const rate = Number(p["selling_price"]);
+        return { id: Number(p["id"]), name: p["name"] as string, rate, qty: item.quantity, amount: rate * item.quantity };
+      });
+
+      const total = Math.round(priced.reduce((s, i) => s + i.amount, 0) * 100) / 100;
+      let paid = data.mode === "paid" ? total : data.mode === "credit" ? 0 : data.amountPaid;
+      paid = Math.round(paid * 100) / 100;
+      if (paid < 0) throw new Error("Paid amount cannot be negative");
+      if (paid > total) throw new Error("Paid amount cannot be more than the bill total");
+      if (data.mode === "partial" && paid === 0) throw new Error("Enter the amount the customer paid");
+
+      const credit = Math.round((total - paid) * 100) / 100;
+      if (credit > 0 && !data.customerId) {
+        throw new Error("Select a customer before putting a bill on udhar");
+      }
+
+      const invoice = nextNumber(d, "sales", "invoice_no", "INV-", 1001);
+      const status = credit === 0 ? "paid" : paid === 0 ? "udhar" : "partial";
+      const methodLabel = credit > 0 ? (paid > 0 ? `${data.method} + Udhar` : "Udhar") : data.method;
+
+      const sale = d
+        .prepare(
+          `INSERT INTO sales (invoice_no, customer_id, total, payment_method, status)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(invoice, data.customerId, total, methodLabel, status);
+      const saleId = Number(sale.lastInsertRowid);
+
+      const insertItem = d.prepare(
+        "INSERT INTO sale_items (sale_id, product_id, quantity, rate, amount) VALUES (?, ?, ?, ?, ?)",
+      );
+      const reduceStock = d.prepare(
+        "UPDATE products SET stock = stock - ?, updated_at = datetime('now') WHERE id = ?",
+      );
+      const movement = d.prepare(
+        "INSERT INTO inventory_movements (product_id, type, quantity, note) VALUES (?, 'out', ?, ?)",
+      );
+      for (const i of priced) {
+        insertItem.run(saleId, i.id, i.qty, i.rate, i.amount);
+        reduceStock.run(i.qty, i.id);
+        movement.run(i.id, -i.qty, `Sale ${invoice}`);
+      }
+
+      const negative = d.prepare("SELECT COUNT(*) AS c FROM products WHERE stock < 0").get();
+      if (Number(negative?.["c"] ?? 0) > 0) throw new Error("Stock cannot go below zero");
+
+      if (paid > 0) {
+        const receipt = nextNumber(d, "payments", "receipt_no", "RCP-", 5001);
+        d.prepare(
+          `INSERT INTO payments (receipt_no, customer_id, amount, method, note)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(receipt, data.customerId, paid, data.method, `Sale ${invoice}`);
+      }
+
+      if (credit > 0 && data.customerId) {
+        d.prepare(
+          `INSERT INTO credit_transactions (customer_id, sale_id, type, amount, note)
+           VALUES (?, ?, 'debit', ?, ?)`,
+        ).run(data.customerId, saleId, credit, `Sale ${invoice}`);
+      }
+
+      return { invoice, total, paid, credit };
+    });
+  });
+
+/* -------------------------------------------------------- record payment */
+
+export const recordPayment = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z
+      .object({
+        customerId: z.number().int().positive("Select a customer"),
+        amount: z.number().positive("Enter an amount greater than zero"),
+        method: z.enum(["Cash", "UPI", "Bank"]).default("Cash"),
+        note: z.string().trim().default(""),
+      })
+      .parse(data),
+  )
+  .handler(async ({ data }) => {
+    return inTransaction((d) => {
+      const customer = d.prepare("SELECT id, name FROM customers WHERE id = ?").get(data.customerId);
+      if (!customer) throw new Error("Customer not found");
+
+      const outstanding = balanceOf(d, data.customerId);
+      if (outstanding <= 0) throw new Error("This customer has no outstanding udhar");
+      const amount = Math.round(data.amount * 100) / 100;
+      if (amount > outstanding) {
+        throw new Error(`Payment cannot be more than the outstanding balance of ${outstanding}`);
+      }
+
+      const receipt = nextNumber(d, "payments", "receipt_no", "RCP-", 5001);
+      d.prepare(
+        "INSERT INTO payments (receipt_no, customer_id, amount, method, note) VALUES (?, ?, ?, ?, ?)",
+      ).run(receipt, data.customerId, amount, data.method, data.note);
+      d.prepare(
+        `INSERT INTO credit_transactions (customer_id, type, amount, note)
+         VALUES (?, 'credit', ?, ?)`,
+      ).run(data.customerId, amount, data.note || `Payment ${receipt}`);
+
+      return { receipt, amount, outstanding: Math.round((outstanding - amount) * 100) / 100 };
+    });
+  });
+
+/* ------------------------------------------------------- credit details */
+
+export const getCreditDetail = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => z.object({ id: z.number() }).parse(data))
+  .handler(async ({ data }) => {
+    const d = await db();
+    const customer = d.prepare("SELECT id, name, phone FROM customers WHERE id = ?").get(data.id);
+    if (!customer) throw new Error("Customer not found");
+
+    const entries = d
+      .prepare(
+        `SELECT ct.type, ct.amount, ct.note, ct.occurred_at, s.invoice_no
+         FROM credit_transactions ct LEFT JOIN sales s ON s.id = ct.sale_id
+         WHERE ct.customer_id = ? ORDER BY ct.occurred_at DESC, ct.id DESC`,
+      )
+      .all(data.id)
+      .map((r) => ({
+        type: r["type"] as "debit" | "credit",
+        amount: Number(r["amount"]),
+        note: (r["note"] as string) ?? "",
+        occurredAt: r["occurred_at"] as string,
+        invoice: (r["invoice_no"] as string) ?? null,
+      }));
+
+    const totalCredit = entries.filter((e) => e.type === "debit").reduce((s, e) => s + e.amount, 0);
+    const totalPaid = entries.filter((e) => e.type === "credit").reduce((s, e) => s + e.amount, 0);
+
+    return {
+      id: Number(customer["id"]),
+      name: customer["name"] as string,
+      phone: customer["phone"] as string,
+      totalCredit,
+      totalPaid,
+      outstanding: Math.round((totalCredit - totalPaid) * 100) / 100,
+      entries,
+    };
+  });
+
+/* ----------------------------------------------------- credit + payments */
+
+export const getCreditOverview = createServerFn({ method: "GET" }).handler(async () => {
+  const d = await db();
+  const rows = d
+    .prepare(
+      `SELECT c.id, c.name, c.phone,
+              COALESCE((SELECT SUM(amount) FROM credit_transactions ct WHERE ct.customer_id = c.id AND ct.type='debit'), 0) AS total_credit,
+              COALESCE((SELECT SUM(amount) FROM credit_transactions ct WHERE ct.customer_id = c.id AND ct.type='credit'), 0) AS total_paid,
+              (SELECT MAX(ct.occurred_at) FROM credit_transactions ct WHERE ct.customer_id = c.id) AS last_entry
+       FROM customers c ORDER BY c.name`,
+    )
+    .all()
+    .map((r) => {
+      const totalCredit = Number(r["total_credit"]);
+      const totalPaid = Number(r["total_paid"]);
+      return {
+        id: Number(r["id"]),
+        name: r["name"] as string,
+        phone: r["phone"] as string,
+        totalCredit,
+        totalPaid,
+        outstanding: Math.round((totalCredit - totalPaid) * 100) / 100,
+        lastEntry: (r["last_entry"] as string) ?? null,
+      };
+    });
+
+  const withBalance = rows.filter((r) => r.outstanding > 0.001);
+  const collectedWeek = Number(
+    d
+      .prepare("SELECT COALESCE(SUM(amount), 0) AS v FROM payments WHERE date(paid_at) >= date('now', '-6 days')")
+      .get()?.["v"] ?? 0,
+  );
+
+  return {
+    rows: withBalance,
+    all: rows,
+    totalOutstanding: withBalance.reduce((s, r) => s + r.outstanding, 0),
+    customersWithUdhar: withBalance.length,
+    totalCredit: rows.reduce((s, r) => s + r.totalCredit, 0),
+    totalPaid: rows.reduce((s, r) => s + r.totalPaid, 0),
+    collectedWeek,
+  };
+});
+
+/* ------------------------------------------------- full customer profile */
+
+export const getCustomerProfile = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => z.object({ id: z.number() }).parse(data))
+  .handler(async ({ data }) => {
+    const d = await db();
+    const row = d
+      .prepare(
+        `SELECT c.id, c.name, c.phone, c.address, c.notes, c.created_at,
+                ${BALANCE_SQL} AS outstanding,
+                (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id) AS purchases
+         FROM customers c WHERE c.id = ?`,
+      )
+      .get(data.id);
+    if (!row) throw new Error("Customer not found");
+
+    const sales = d
+      .prepare(
+        `SELECT s.invoice_no, s.total, s.status, s.payment_method, s.sold_at,
+                (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS items
+         FROM sales s WHERE s.customer_id = ? ORDER BY s.sold_at DESC, s.id DESC LIMIT 10`,
+      )
+      .all(data.id)
+      .map((r) => ({
+        invoice: r["invoice_no"] as string,
+        total: Number(r["total"]),
+        status: r["status"] as string,
+        method: r["payment_method"] as string,
+        soldAt: r["sold_at"] as string,
+        items: Number(r["items"]),
+      }));
+
+    const payments = d
+      .prepare(
+        `SELECT receipt_no, amount, method, note, paid_at FROM payments
+         WHERE customer_id = ? ORDER BY paid_at DESC, id DESC LIMIT 10`,
+      )
+      .all(data.id)
+      .map((r) => ({
+        receipt: r["receipt_no"] as string,
+        amount: Number(r["amount"]),
+        method: r["method"] as string,
+        note: (r["note"] as string) ?? "",
+        paidAt: r["paid_at"] as string,
+      }));
+
+    const credit = d
+      .prepare(
+        `SELECT ct.type, ct.amount, ct.note, ct.occurred_at, s.invoice_no
+         FROM credit_transactions ct LEFT JOIN sales s ON s.id = ct.sale_id
+         WHERE ct.customer_id = ? ORDER BY ct.occurred_at DESC, ct.id DESC LIMIT 10`,
+      )
+      .all(data.id)
+      .map((r) => ({
+        type: r["type"] as "debit" | "credit",
+        amount: Number(r["amount"]),
+        note: (r["note"] as string) ?? "",
+        occurredAt: r["occurred_at"] as string,
+        invoice: (r["invoice_no"] as string) ?? null,
+      }));
+
+    return { customer: mapCustomer(row), sales, payments, credit };
+  });
+
+/* --------------------------------------------------------- page summaries */
+
+export const getInventorySummary = createServerFn({ method: "GET" }).handler(async () => {
+  const d = await db();
+  const num = (sql: string) => Number(d.prepare(sql).get()?.["v"] ?? 0);
+  return {
+    tracked: num("SELECT COUNT(*) AS v FROM products"),
+    low: num("SELECT COUNT(*) AS v FROM products WHERE stock <= low_stock_threshold AND stock > 0"),
+    out: num("SELECT COUNT(*) AS v FROM products WHERE stock <= 0"),
+    inToday: num(
+      "SELECT COALESCE(SUM(quantity), 0) AS v FROM inventory_movements WHERE type = 'in' AND date(occurred_at) = date('now')",
+    ),
+    stockValue: num("SELECT COALESCE(SUM(stock * cost_price), 0) AS v FROM products"),
+  };
+});
+
+export const getPaymentSummary = createServerFn({ method: "GET" }).handler(async () => {
+  const d = await db();
+  const num = (sql: string) => Number(d.prepare(sql).get()?.["v"] ?? 0);
+  return {
+    today: num("SELECT COALESCE(SUM(amount), 0) AS v FROM payments WHERE date(paid_at) = date('now')"),
+    todayCount: num("SELECT COUNT(*) AS v FROM payments WHERE date(paid_at) = date('now')"),
+    week: num("SELECT COALESCE(SUM(amount), 0) AS v FROM payments WHERE date(paid_at) >= date('now', '-6 days')"),
+    weekCount: num("SELECT COUNT(*) AS v FROM payments WHERE date(paid_at) >= date('now', '-6 days')"),
+    cashShare: num(
+      `SELECT CASE WHEN SUM(amount) > 0 THEN ROUND(100.0 * SUM(CASE WHEN method = 'Cash' THEN amount ELSE 0 END) / SUM(amount)) ELSE 0 END AS v FROM payments`,
+    ),
+    outstanding: num(
+      "SELECT COALESCE(SUM(CASE type WHEN 'debit' THEN amount ELSE -amount END), 0) AS v FROM credit_transactions",
+    ),
+  };
+});
+
+export const getSalesSummary = createServerFn({ method: "GET" }).handler(async () => {
+  const d = await db();
+  const num = (sql: string) => Number(d.prepare(sql).get()?.["v"] ?? 0);
+  const today = num("SELECT COALESCE(SUM(total), 0) AS v FROM sales WHERE date(sold_at) = date('now')");
+  const bills = num("SELECT COUNT(*) AS v FROM sales WHERE date(sold_at) = date('now')");
+  return {
+    today,
+    bills,
+    settled: num(
+      "SELECT COALESCE(SUM(total), 0) AS v FROM sales WHERE date(sold_at) = date('now') AND status = 'paid'",
+    ),
+    onUdhar: num(
+      `SELECT COALESCE(SUM(amount), 0) AS v FROM credit_transactions WHERE type='debit' AND date(occurred_at) = date('now')`,
+    ),
+    average: bills > 0 ? Math.round(today / bills) : 0,
+  };
+});

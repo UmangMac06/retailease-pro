@@ -130,6 +130,14 @@ function SalesPage() {
 
 type Line = { productId: number | ""; quantity: string };
 
+type SalePayload = {
+  customerId: number | null;
+  method: "Cash" | "UPI" | "Bank";
+  mode: "paid" | "credit" | "partial";
+  amountPaid: number;
+  items: { productId: number; quantity: number }[];
+};
+
 function NewSaleDialog() {
   const [open, setOpen] = useState(false);
   const [customerId, setCustomerId] = useState<number | "">("");
@@ -165,7 +173,7 @@ function NewSaleDialog() {
   };
 
   const save = useMutation({
-    mutationFn: (payload: Parameters<typeof createSale>[0]["data"]) => createSale({ data: payload }),
+    mutationFn: (payload: SalePayload) => createSale({ data: payload }),
     onSuccess: () => {
       void qc.invalidateQueries();
       setOpen(false);

@@ -1,10 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { NotebookPen } from "lucide-react";
+import { useState, useMemo } from "react";
+import { NotebookPen, Search, Eye, ArrowUpRight, ArrowDownLeft, History, Calendar } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
 import { AppShell, KpiCard, SectionCard, thStyle, tdStyle } from "@/components/AppShell";
 import { StatusBadge } from "@/components/StatusBadge";
-import { credits, inr } from "@/data/demo";
+import { inr, shortDate, shortTime } from "@/lib/format";
+import {
+  getCreditOverview,
+  getCreditDetail
+} from "@/lib/retailease.functions";
 import {
   Dialog,
   DialogContent,
@@ -12,7 +17,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
+import { RecordPaymentDialog } from "./payments";
 
 export const Route = createFileRoute("/credit")({
   head: () => ({
@@ -30,127 +37,228 @@ export const Route = createFileRoute("/credit")({
 });
 
 function CreditPage() {
-  const [selected, setSelected] = useState<(typeof credits)[number] | null>(null);
+  const [query, setQuery] = useState("");
+  const overview = useQuery({ queryKey: ["credit-overview"], queryFn: () => getCreditOverview() });
+  
+  const data = overview.data?.rows ?? [];
+  const rows = useMemo(() => {
+    return data.filter((c) =>
+      (c.name + c.phone).toLowerCase().includes(query.toLowerCase()),
+    );
+  }, [data, query]);
 
   return (
     <AppShell
       title="Udhar / Credit"
       subtitle="Who owes what, and how long it has been on the book."
-      action={
-        <button
-          onClick={() => setSelected(credits[0] ?? null)}
-          className="flex h-9 items-center gap-2 rounded-lg bg-gold px-3.5 text-sm font-medium text-primary-foreground transition hover:brightness-95"
-        >
-          <NotebookPen className="size-4" /> Add Payment
-        </button>
-      }
+      action={<RecordPaymentDialog />}
     >
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Total Outstanding" value={inr(24310)} hint="18 customers" badge="Udhar" badgeTone="warning" />
-        <KpiCard label="Due Today" value={inr(380)} hint="1 customer" />
-        <KpiCard label="Overdue" value={inr(9650)} hint="2 customers past 7 days" badge="Overdue" badgeTone="danger" />
-        <KpiCard label="Collected This Week" value={inr(6660)} hint="6 payments" badgeTone="success" />
+        <KpiCard 
+          label="Total Outstanding" 
+          value={inr(overview.data?.totalOutstanding ?? 0)} 
+          hint={`${overview.data?.customersWithUdhar ?? 0} customers`} 
+          badge="Udhar" 
+          badgeTone="warning" 
+        />
+        <KpiCard 
+          label="Total Credit Given" 
+          value={inr(overview.data?.totalCredit ?? 0)} 
+          hint="lifetime udhar" 
+        />
+        <KpiCard 
+          label="Total Collected" 
+          value={inr(overview.data?.totalPaid ?? 0)} 
+          hint="lifetime payments" 
+          badgeTone="success"
+        />
+        <KpiCard 
+          label="Collected This Week" 
+          value={inr(overview.data?.collectedWeek ?? 0)} 
+          hint="last 7 days" 
+          badgeTone="success" 
+        />
       </div>
 
-      <SectionCard title="Credit Ledger" description="Outstanding balances across the shop">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className={thStyle}>Customer</th>
-              <th className={thStyle}>Last Entry</th>
-              <th className={`${thStyle} text-right`}>Outstanding</th>
-              <th className={thStyle}>Status</th>
-              <th className={`${thStyle} text-right`}>Action</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {credits.map((c) => (
-              <tr key={c.phone} className="transition-colors hover:bg-brand-soft/50">
-                <td className={tdStyle}>
-                  <div className="font-medium">{c.name}</div>
-                  <div className="text-[11px] text-muted-foreground">{c.phone}</div>
-                </td>
-                <td className={`${tdStyle} text-muted-foreground`}>{c.last}</td>
-                <td className={`${tdStyle} text-right font-mono font-medium`}>{inr(c.amount)}</td>
-                <td className={tdStyle}>
-                  <StatusBadge tone={c.status}>{c.label}</StatusBadge>
-                </td>
-                <td className={`${tdStyle} text-right`}>
-                  <button
-                    onClick={() => setSelected(c)}
-                    className="text-xs font-medium text-brand transition-colors hover:text-brand-deep"
-                  >
-                    Add payment
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </SectionCard>
-
-      <Dialog open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="font-serif">Add Payment</DialogTitle>
-            <DialogDescription>
-              {selected ? `${selected.name} · outstanding ${inr(selected.amount)}` : ""}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3.5">
-            <label className="block">
-              <span className="text-xs font-medium text-foreground/80">Amount received</span>
-              <div className="relative mt-1">
-                <span className="absolute top-1/2 left-3 -translate-y-1/2 font-mono text-sm text-muted-foreground">
-                  ₹
-                </span>
-                <input
-                  defaultValue="2,000"
-                  className="h-10 w-full rounded-lg border border-input bg-background pr-3 pl-7 font-mono text-sm focus:ring-2 focus:ring-ring focus:outline-none"
-                />
-              </div>
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="text-xs font-medium text-foreground/80">Method</span>
-                <select className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-ring focus:outline-none">
-                  <option>Cash</option>
-                  <option>UPI</option>
-                  <option>Bank</option>
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-foreground/80">Date</span>
-                <input
-                  defaultValue="14 Jan 2025"
-                  className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-sm focus:ring-2 focus:ring-ring focus:outline-none"
-                />
-              </label>
-            </div>
-            <label className="block">
-              <span className="text-xs font-medium text-foreground/80">Note (optional)</span>
-              <input
-                placeholder="Partial payment"
-                className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-ring focus:outline-none"
-              />
-            </label>
+      <SectionCard 
+        title="Credit Ledger" 
+        description={`${rows.length} customers with balance`}
+        action={
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter by name or phone…"
+              className="h-9 w-64 rounded-lg border border-input bg-background pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:ring-2 focus:ring-ring focus:outline-none"
+            />
           </div>
-          <DialogFooter>
-            <button
-              onClick={() => setSelected(null)}
-              className="h-9 rounded-lg px-4 text-sm font-medium text-muted-foreground hover:bg-muted"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => setSelected(null)}
-              className="h-9 rounded-lg bg-brand px-4 text-sm font-medium text-primary-foreground hover:bg-brand-deep"
-            >
-              Record Payment
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        }
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left">
+                <th className={thStyle}>Customer</th>
+                <th className={thStyle}>Last Entry</th>
+                <th className={`${thStyle} text-right`}>Credit Given</th>
+                <th className={`${thStyle} text-right`}>Total Paid</th>
+                <th className={`${thStyle} text-right`}>Outstanding</th>
+                <th className={`${thStyle} text-right`}>Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {rows.map((c) => (
+                <tr key={c.id} className="group transition-colors hover:bg-brand-soft/50">
+                  <td className={tdStyle}>
+                    <div className="font-medium">{c.name}</div>
+                    <div className="text-[11px] text-muted-foreground">{c.phone}</div>
+                  </td>
+                  <td className={`${tdStyle} text-muted-foreground`}>
+                    {c.lastEntry ? shortDate(c.lastEntry) : "—"}
+                  </td>
+                  <td className={`${tdStyle} text-right font-mono text-muted-foreground`}>{inr(c.totalCredit)}</td>
+                  <td className={`${tdStyle} text-right font-mono text-muted-foreground`}>{inr(c.totalPaid)}</td>
+                  <td className={`${tdStyle} text-right font-mono font-medium text-brand-deep`}>{inr(c.outstanding)}</td>
+                  <td className={`${tdStyle} text-right`}>
+                    <div className="flex justify-end gap-3">
+                      <CreditDetailDialog customerId={c.id} />
+                      <RecordPaymentDialog 
+                        customerId={c.id} 
+                        trigger={
+                          <button className="text-xs font-medium text-brand hover:text-brand-deep transition-colors">
+                            Add payment
+                          </button>
+                        } 
+                      />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                    {overview.isLoading ? "Loading ledger..." : "No outstanding credit found."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </SectionCard>
     </AppShell>
   );
 }
+
+function CreditDetailDialog({ customerId }: { customerId: number }) {
+  const [open, setOpen] = useState(false);
+  const detail = useQuery({
+    queryKey: ["credit-detail", customerId],
+    queryFn: () => getCreditDetail({ data: { id: customerId } }),
+    enabled: open
+  });
+
+  const data = detail.data;
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button className="text-xs font-medium text-muted-foreground hover:text-brand transition-colors flex items-center gap-1">
+          <Eye className="size-3" /> View history
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="font-serif">Credit Statement</DialogTitle>
+          <DialogDescription>Detailed ledger for {data?.name || 'customer'}</DialogDescription>
+        </DialogHeader>
+
+        {detail.isLoading ? (
+          <div className="py-20 text-center text-muted-foreground">Loading ledger...</div>
+        ) : data ? (
+          <div className="space-y-6">
+            <div className="grid grid-cols-3 gap-4 rounded-xl border border-border p-4 bg-muted/30">
+              <div className="text-center">
+                <div className="text-[10px] text-muted-foreground uppercase mb-1">Total Credit</div>
+                <div className="font-mono font-bold text-danger">{inr(data.totalCredit)}</div>
+              </div>
+              <div className="text-center border-x border-border">
+                <div className="text-[10px] text-muted-foreground uppercase mb-1">Total Paid</div>
+                <div className="font-mono font-bold text-success">{inr(data.totalPaid)}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-[10px] text-muted-foreground uppercase mb-1">Outstanding</div>
+                <div className="font-mono font-bold text-brand-deep text-lg">{inr(data.outstanding)}</div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 font-serif text-lg">
+                  <History className="size-5 text-brand" /> Transaction History
+                </h3>
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/50">
+                    <tr className="border-b border-border text-left">
+                      <th className={thStyle}>Date & Time</th>
+                      <th className={thStyle}>Ref / Note</th>
+                      <th className={`${thStyle} text-right`}>Debit (Udhar)</th>
+                      <th className={`${thStyle} text-right`}>Credit (Paid)</th>
+                      <th className={`${thStyle} text-right`}>Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {data.entries.map((e, idx) => {
+                      const balanceAfter = data.entries.slice(idx).reduce((acc, curr) => {
+                        return acc + (curr.type === 'debit' ? curr.amount : -curr.amount);
+                      }, 0);
+                      
+                      return (
+                        <tr key={idx} className="hover:bg-muted/30 transition-colors">
+                          <td className={tdStyle}>
+                            <div>{shortDate(e.occurredAt)}</div>
+                            <div className="text-[10px] text-muted-foreground">{shortTime(e.occurredAt)}</div>
+                          </td>
+                          <td className={tdStyle}>
+                            <div className="font-medium">{e.invoice || 'Payment'}</div>
+                            <div className="text-[10px] text-muted-foreground truncate max-w-[150px]">{e.note}</div>
+                          </td>
+                          <td className={`${tdStyle} text-right font-mono text-danger`}>
+                            {e.type === 'debit' ? inr(e.amount) : '—'}
+                          </td>
+                          <td className={`${tdStyle} text-right font-mono text-success`}>
+                            {e.type === 'credit' ? inr(e.amount) : '—'}
+                          </td>
+                          <td className={`${tdStyle} text-right font-mono font-medium`}>
+                            {inr(balanceAfter)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {data.entries.length === 0 && (
+                      <tr><td colSpan={5} className="py-8 text-center text-muted-foreground italic">No transactions recorded</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="py-20 text-center text-danger">Failed to load statement.</div>
+        )}
+
+        <DialogFooter className="mt-4">
+          <button
+            onClick={() => setOpen(false)}
+            className="h-9 rounded-lg bg-brand px-4 text-sm font-medium text-primary-foreground hover:bg-brand-deep"
+          >
+            Close
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+

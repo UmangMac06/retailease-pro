@@ -5,7 +5,9 @@ import type { Db } from "./db.server";
 
 async function db(): Promise<Db> {
   const mod = await import("./db.server");
-  return mod.getDb();
+  const user = await mod.getSessionUser();
+  if (!user) throw new Error("Please sign in to continue");
+  return mod.getShopDb(Number(user["id"]));
 }
 
 const BALANCE_SQL = `
@@ -17,43 +19,75 @@ const BALANCE_SQL = `
 
 /* ------------------------------------------------------------------ shop */
 
-export type Shop = { name: string; owner: string; role: string };
+export type Shop = { name: string; owner: string; role: string; phone: string };
 
-export const getShop = createServerFn({ method: "GET" }).handler(async (): Promise<Shop> => {
-  const d = await db();
-  const row = d.prepare("SELECT name, shop_name, role FROM users ORDER BY id LIMIT 1").get();
+/** Current signed-in shop, or null when nobody is signed in. */
+export const getShop = createServerFn({ method: "GET" }).handler(async (): Promise<Shop | null> => {
+  const { getSessionUser } = await import("./db.server");
+  const row = await getSessionUser();
+  if (!row) return null;
   return {
-    name: (row?.["shop_name"] as string) ?? "RetailEase",
-    owner: (row?.["name"] as string) ?? "Shop Owner",
-    role: (row?.["role"] as string) ?? "Shop Owner",
+    name: row["shop_name"] as string,
+    owner: row["name"] as string,
+    role: row["role"] as string,
+    phone: row["phone"] as string,
   };
 });
 
 /* ------------------------------------------------------------------ auth */
 
+const mobileSchema = z
+  .string()
+  .transform((v) => v.replace(/[\s-]/g, ""))
+  .refine((v) => /^\d{10}$/.test(v), "Enter a valid 10-digit mobile number (digits only)");
+
+export const NO_ACCOUNT = "NO_ACCOUNT";
+
 export const login = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) =>
-    z.object({ phone: z.string().min(1), password: z.string().min(1) }).parse(data),
+    z.object({ phone: mobileSchema, password: z.string().min(1, "Enter your password") }).parse(data),
   )
   .handler(async ({ data }) => {
-    const d = await db();
-    const { hashPassword } = await import("./db.server");
-    const phone = data.phone.replace(/\D/g, "");
-    const row = d
-      .prepare("SELECT id, name, phone, shop_name, role, password_hash FROM users WHERE phone = ?")
-      .get(phone);
-
-    if (!row || row["password_hash"] !== hashPassword(data.password)) {
-      throw new Error("Invalid mobile number or password");
+    const mod = await import("./db.server");
+    const d = await mod.getDb();
+    const row = d.prepare("SELECT id, password_hash FROM users WHERE phone = ?").get(data.phone);
+    if (!row) throw new Error(NO_ACCOUNT);
+    if (row["password_hash"] !== mod.hashPassword(data.password)) {
+      throw new Error("Incorrect password for this mobile number");
     }
-    return {
-      id: Number(row["id"]),
-      name: row["name"] as string,
-      phone: row["phone"] as string,
-      shopName: row["shop_name"] as string,
-      role: row["role"] as string,
-    };
+    await mod.startSession(Number(row["id"]));
+    return { ok: true };
   });
+
+export const signup = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z
+      .object({
+        name: z.string().trim().min(2, "Enter your name").max(80),
+        shopName: z.string().trim().min(2, "Enter your shop name").max(100),
+        phone: mobileSchema,
+        password: z.string().min(6, "Password must be at least 6 characters").max(100),
+      })
+      .parse(data),
+  )
+  .handler(async ({ data }) => {
+    const mod = await import("./db.server");
+    const d = await mod.getDb();
+    if (d.prepare("SELECT id FROM users WHERE phone = ?").get(data.phone)) {
+      throw new Error("An account with this mobile number already exists. Please sign in.");
+    }
+    const res = d
+      .prepare("INSERT INTO users (name, phone, password_hash, shop_name, role) VALUES (?, ?, ?, ?, 'Shop Owner')")
+      .run(data.name, data.phone, mod.hashPassword(data.password), data.shopName);
+    await mod.startSession(Number(res.lastInsertRowid));
+    return { ok: true };
+  });
+
+export const logout = createServerFn({ method: "POST" }).handler(async () => {
+  const { endSession } = await import("./db.server");
+  await endSession();
+  return { ok: true };
+});
 
 /* ------------------------------------------------------------- customers */
 

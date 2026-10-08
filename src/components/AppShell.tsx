@@ -1,4 +1,4 @@
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard,
   BarChart3,
@@ -13,12 +13,12 @@ import {
   PanelLeft,
   LogOut,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
-import { getShop } from "@/lib/retailease.functions";
+import { getShop, logout } from "@/lib/retailease.functions";
 import { initialsOf } from "@/lib/format";
 
 const groups = [
@@ -60,11 +60,21 @@ export function AppShell({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { data } = useQuery({
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { data, isSuccess } = useQuery({
     queryKey: ["shop"],
     queryFn: () => getShop(),
     staleTime: Infinity,
   });
+  useEffect(() => {
+    if (isSuccess && !data) navigate({ to: "/" });
+  }, [isSuccess, data, navigate]);
+  const signOut = async () => {
+    await logout();
+    queryClient.clear();
+    navigate({ to: "/" });
+  };
   const shop = {
     name: data?.name ?? "RetailEase",
     owner: data?.owner ?? "Shop Owner",
@@ -140,12 +150,13 @@ export function AppShell({
             )}
           </div>
           {!collapsed && (
-            <Link
-              to="/"
+            <button
+              type="button"
+              onClick={signOut}
               className="mt-3 flex items-center gap-2 rounded-md px-1 py-1.5 text-[12px] text-primary-foreground/60 transition-colors hover:text-primary-foreground"
             >
               <LogOut className="size-3.5" /> Sign out
-            </Link>
+            </button>
           )}
         </div>
       </aside>

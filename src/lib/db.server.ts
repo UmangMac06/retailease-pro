@@ -117,6 +117,72 @@ export function hashPassword(password: string) {
   return crypto.createHash("sha256").update(`retailease:${password}`).digest("hex");
 }
 
+const SESSION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
+export const SESSION_COOKIE = "re_session";
+
+/**
+ * Each shop owner gets their own data file. The demo owner (user #1) uses the
+ * main seeded database; every new account starts with an empty shop file
+ * (data/shop-<id>.db) so owners never see each other's records.
+ */
+const shopDbs = new Map<number, Db>();
+export async function getShopDb(userId: number): Promise<Db> {
+  if (userId === 1) return getDb();
+  const cached = shopDbs.get(userId);
+  if (cached) return cached;
+  const { DatabaseSync } = (await import("node:sqlite")) as unknown as {
+    DatabaseSync: new (p: string) => Db;
+  };
+  const dir = path.join(process.cwd(), "data");
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(path.join(dir, `shop-${userId}.db`));
+  db.exec(SCHEMA);
+  shopDbs.set(userId, db);
+  return db;
+}
+
+/** Returns the signed-in user (from the session cookie) or null. */
+export async function getSessionUser(): Promise<Row | null> {
+  const { getCookie } = await import("@tanstack/react-start/server");
+  const token = getCookie(SESSION_COOKIE);
+  if (!token) return null;
+  const db = await getDb();
+  return (
+    db
+      .prepare(
+        `SELECT u.id, u.name, u.phone, u.shop_name, u.role FROM sessions s
+         JOIN users u ON u.id = s.user_id WHERE s.token = ?`,
+      )
+      .get(token) ?? null
+  );
+}
+
+export async function startSession(userId: number) {
+  const { setCookie } = await import("@tanstack/react-start/server");
+  const token = crypto.randomBytes(24).toString("hex");
+  (await getDb()).prepare("INSERT INTO sessions (token, user_id) VALUES (?, ?)").run(token, userId);
+  setCookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30,
+  });
+}
+
+export async function endSession() {
+  const { getCookie, deleteCookie } = await import("@tanstack/react-start/server");
+  const token = getCookie(SESSION_COOKIE);
+  if (token) (await getDb()).prepare("DELETE FROM sessions WHERE token = ?").run(token);
+  deleteCookie(SESSION_COOKIE, { path: "/" });
+}
+
 let dbPromise: Promise<Db> | undefined;
 
 export function getDb(): Promise<Db> {
@@ -137,6 +203,7 @@ async function openDb(): Promise<Db> {
   fs.mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, "retailease.db"));
   db.exec(SCHEMA);
+  db.exec(SESSION_SCHEMA);
   seedIfEmpty(db);
   return db;
 }

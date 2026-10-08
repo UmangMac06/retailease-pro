@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 
 import { AppShell, KpiCard, SectionCard, thStyle, tdStyle } from "@/components/AppShell";
 import { StatusBadge } from "@/components/StatusBadge";
-import { credits, inr, lowStock, recentSales } from "@/data/demo";
+import { inr, shortDate, shortTime } from "@/lib/format";
+import { getDashboard } from "@/lib/retailease.functions";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({
@@ -23,6 +25,13 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 function DashboardPage() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: () => getDashboard(),
+  });
+
+  if (isLoading || !data) return null;
+
   return (
     <AppShell
       title="Today at the counter"
@@ -39,26 +48,26 @@ function DashboardPage() {
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
           label="Today's Sales"
-          value={inr(18420)}
-          hint="42 transactions · avg ₹ 439"
-          badge="+12%"
+          value={inr(data.todaySales)}
+          hint={`${data.todayCount} transactions · avg ${inr(data.todayCount > 0 ? data.todaySales / data.todayCount : 0)}`}
+          badge="Today"
           badgeTone="success"
         />
         <KpiCard
           label="Credit Outstanding"
-          value={inr(24310)}
-          hint="18 customers · 5 due today"
+          value={inr(data.outstanding)}
+          hint={`${data.creditCustomers} customers`}
           badge="Udhar"
           badgeTone="warning"
         />
         <KpiCard
           label="Low Stock"
-          value="7"
+          value={data.lowStockCount.toString()}
           hint="items below reorder level"
           badge="Reorder"
           badgeTone="danger"
         />
-        <KpiCard label="Customers" value="312" hint="9 new this week" badge="Active" />
+        <KpiCard label="Customers" value={data.totalCustomers.toString()} hint="total registered" badge="Active" />
       </div>
 
       <div className="mb-4 grid gap-4 xl:grid-cols-3">
@@ -81,21 +90,30 @@ function DashboardPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {recentSales.slice(0, 5).map((s) => (
-                <tr key={s.id} className="transition-colors hover:bg-brand-soft/50">
+              {data.recentSales.map((s) => (
+                <tr key={s.invoice} className="transition-colors hover:bg-brand-soft/50">
                   <td className={tdStyle}>
                     <div className="font-medium">{s.customer}</div>
-                    <div className="text-[11px] text-muted-foreground">{s.time}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {shortDate(s.soldAt)} {shortTime(s.soldAt)}
+                    </div>
                   </td>
                   <td className={`${tdStyle} text-muted-foreground`}>{s.items} items</td>
-                  <td className={`${tdStyle} text-right font-mono`}>{inr(s.amount)}</td>
+                  <td className={`${tdStyle} text-right font-mono`}>{inr(s.total)}</td>
                   <td className={`${tdStyle} text-right`}>
-                    <StatusBadge tone={s.status}>
-                      {s.status === "paid" ? "Paid" : s.status === "udhar" ? "Udhar" : "COD"}
+                    <StatusBadge tone={s.status === "paid" ? "paid" : s.status === "partial" ? "due" : "udhar"}>
+                      {s.status === "paid" ? "Paid" : s.status === "partial" ? "Part paid" : "Udhar"}
                     </StatusBadge>
                   </td>
                 </tr>
               ))}
+              {data.recentSales.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                    No sales yet.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </SectionCard>
@@ -105,29 +123,30 @@ function DashboardPage() {
           className="flex flex-col"
           action={
             <span className="rounded bg-danger-soft px-1.5 py-0.5 font-mono text-[11px] text-danger">
-              7
+              {data.lowStockCount}
             </span>
           }
         >
           <ul className="flex-1 divide-y divide-border">
-            {lowStock.map((p) => (
+            {data.lowStock.map((p) => (
               <li key={p.name} className="flex items-center justify-between gap-3 px-5 py-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">{p.name}</div>
                   <div className="text-[11px] text-muted-foreground">{p.category}</div>
                 </div>
                 <div className="shrink-0 text-right">
-                  <div className="font-mono text-sm">{p.left} left</div>
-                  <div
-                    className={`text-[10px] tracking-wide uppercase ${
-                      p.level === "critical" ? "text-danger" : "text-warning"
-                    }`}
-                  >
-                    {p.level}
+                  <div className="font-mono text-sm">{p.stock} left</div>
+                  <div className="text-[10px] tracking-wide uppercase text-danger">
+                    Critical
                   </div>
                 </div>
               </li>
             ))}
+            {data.lowStock.length === 0 && (
+              <li className="px-5 py-10 text-center text-sm text-muted-foreground">
+                All stock healthy.
+              </li>
+            )}
           </ul>
           <div className="border-t border-border px-5 py-3">
             <Link
@@ -162,19 +181,26 @@ function DashboardPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {credits.slice(0, 5).map((c) => (
+            {data.credit.map((c) => (
               <tr key={c.phone} className="transition-colors hover:bg-brand-soft/50">
                 <td className={tdStyle}>
                   <div className="font-medium">{c.name}</div>
                   <div className="text-[11px] text-muted-foreground">{c.phone}</div>
                 </td>
-                <td className={`${tdStyle} text-muted-foreground`}>{c.last}</td>
-                <td className={`${tdStyle} text-right font-mono font-medium`}>{inr(c.amount)}</td>
+                <td className={`${tdStyle} text-muted-foreground`}>{shortDate(c.lastEntry)}</td>
+                <td className={`${tdStyle} text-right font-mono font-medium`}>{inr(c.outstanding)}</td>
                 <td className={tdStyle}>
-                  <StatusBadge tone={c.status}>{c.label}</StatusBadge>
+                  <StatusBadge tone="udhar">Udhar</StatusBadge>
                 </td>
               </tr>
             ))}
+            {data.credit.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                  No outstanding credit.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </SectionCard>

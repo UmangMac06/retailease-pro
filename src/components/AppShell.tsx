@@ -13,10 +13,9 @@ import {
   PanelLeft,
   LogOut,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 
 import { cn } from "@/lib/utils";
 import { getShop, logout } from "@/lib/retailease.functions";

@@ -1,4 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { login, signup, NO_ACCOUNT } from "@/lib/retailease.functions";
 import { Store, ShieldCheck } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -21,6 +24,8 @@ export const Route = createFileRoute("/")({
 });
 
 function LoginPage() {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [prefill, setPrefill] = useState("");
   return (
     <div className="grid min-h-screen bg-background lg:grid-cols-2">
       <div className="hidden flex-col justify-between bg-brand px-12 py-12 text-primary-foreground lg:flex">

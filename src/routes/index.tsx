@@ -110,7 +110,7 @@ function LoginForm({ onSignup, prefill }: { onSignup: (phone: string) => void; p
     setError(null);
     setBusy(true);
     try {
-      await login({ data: { phone, password } });
+      await login({ phone, password });
       queryClient.clear();
       navigate({ to: "/dashboard" });
     } catch (e) {

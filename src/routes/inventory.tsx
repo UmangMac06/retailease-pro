@@ -43,7 +43,7 @@ function InventoryPage() {
 
   if (productsLoading || movementsLoading || !products || !movements) return null;
 
-  const lowStock = products.filter((p) => p.stock <= p.threshold);
+  const lowStock = products.filter((p) => p.stock <= p.lowStockThreshold);
   const critical = products.filter((p) => p.stock <= 3);
 
   return (
@@ -77,10 +77,10 @@ function InventoryPage() {
                   <td className={`${tdStyle} font-medium`}>{p.name}</td>
                   <td className={`${tdStyle} text-muted-foreground`}>{p.category}</td>
                   <td className={`${tdStyle} text-right font-mono`}>{p.stock}</td>
-                  <td className={`${tdStyle} text-right font-mono text-muted-foreground`}>{p.threshold}</td>
+                  <td className={`${tdStyle} text-right font-mono text-muted-foreground`}>{p.lowStockThreshold}</td>
                   <td className={tdStyle}>
-                    <StatusBadge tone={p.stock <= 3 ? "critical" : p.stock <= 10 ? "low" : "ok"}>
-                      {p.stock <= 3 ? "Critical" : p.stock <= 10 ? "Low" : "Healthy"}
+                    <StatusBadge tone={p.stock <= 3 ? "critical" : p.stock <= p.lowStockThreshold ? "low" : "ok"}>
+                      {p.stock <= 3 ? "Critical" : p.stock <= p.lowStockThreshold ? "Low" : "Healthy"}
                     </StatusBadge>
                   </td>
                 </tr>
@@ -91,26 +91,29 @@ function InventoryPage() {
 
         <SectionCard title="Recent Movements" description="Stock in, out and adjustments">
           <ul className="divide-y divide-border">
-            {movements.map((m, i) => (
-              <li key={i} className="flex items-start justify-between gap-3 px-5 py-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{m.product}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {new Date(m.occurredAt).toLocaleDateString()} · {m.note || m.type}
+            {movements.map((m, i) => {
+              const product = products.find(p => p.id === m.productId);
+              return (
+                <li key={i} className="flex items-start justify-between gap-3 px-5 py-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{product?.name || "Unknown Product"}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {new Date(m.occurredAt).toLocaleDateString()} · {m.note || m.type}
+                    </div>
                   </div>
-                </div>
-                <div className="shrink-0 text-right">
-                  <div
-                    className={`font-mono text-sm ${m.quantity < 0 || m.type === "out" ? "text-danger" : "text-success"}`}
-                  >
-                    {m.type === "out" ? `${m.quantity}` : m.quantity > 0 ? `+${m.quantity}` : m.quantity}
+                  <div className="shrink-0 text-right">
+                    <div
+                      className={`font-mono text-sm ${m.quantity < 0 || m.type === "out" ? "text-danger" : "text-success"}`}
+                    >
+                      {m.type === "out" ? `${m.quantity}` : m.quantity > 0 ? `+${m.quantity}` : m.quantity}
+                    </div>
+                    <div className="text-[10px] tracking-wide text-muted-foreground uppercase">
+                      {m.type}
+                    </div>
                   </div>
-                  <div className="text-[10px] tracking-wide text-muted-foreground uppercase">
-                    {m.type}
-                  </div>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
             {movements.length === 0 && (
               <li className="px-5 py-10 text-center text-sm text-muted-foreground">
                 No stock movements recorded.

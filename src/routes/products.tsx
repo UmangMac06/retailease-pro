@@ -32,23 +32,32 @@ export const Route = createFileRoute("/products")({
   component: ProductsPage,
 });
 
-const categories = ["All", ...Array.from(new Set(products.map((p) => p.category)))];
-
 function ProductsPage() {
+  const { data: products, isLoading } = useQuery({
+    queryKey: ["products"],
+    queryFn: () => listProducts(),
+  });
+
+  if (isLoading || !products) return null;
+
   const [active, setActive] = useState("All");
+  const categories = ["All", ...Array.from(new Set(products.map((p) => p.category)))];
   const rows = active === "All" ? products : products.filter((p) => p.category === active);
+
+  const outOfStock = products.filter((p) => p.stock === 0).length;
+  const stockValue = products.reduce((sum, p) => sum + (p.cost * p.stock), 0);
 
   return (
     <AppShell
       title="Products"
       subtitle="Your catalogue with purchase cost, selling price and margin."
-      action={<AddProductDialog />}
+      action={<AddProductDialog categories={categories} />}
     >
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Total Products" value="248" hint="across 11 categories" badge="Catalogue" />
-        <KpiCard label="Avg. Margin" value="11.4%" hint="on current price list" badgeTone="success" />
-        <KpiCard label="Stock Value" value={inr(184300)} hint="at purchase cost" />
-        <KpiCard label="Out of Stock" value="3" hint="needs restocking" badge="Urgent" badgeTone="danger" />
+        <KpiCard label="Total Products" value={products.length.toString()} hint="across categories" badge="Catalogue" />
+        <KpiCard label="Stock Value" value={inr(stockValue)} hint="at purchase cost" />
+        <KpiCard label="Categories" value={categories.length.toString()} hint="in catalogue" badgeTone="success" />
+        <KpiCard label="Out of Stock" value={outOfStock.toString()} hint="needs restocking" badge="Urgent" badgeTone="danger" />
       </div>
 
       <div className="mb-4 flex flex-wrap gap-2">
@@ -90,7 +99,7 @@ function ProductsPage() {
                 <td className={`${tdStyle} text-right font-mono`}>{inr(p.cost)}</td>
                 <td className={`${tdStyle} text-right font-mono font-medium`}>{inr(p.price)}</td>
                 <td className={`${tdStyle} text-right`}>
-                  <StatusBadge tone={p.stock <= 3 ? "critical" : p.stock <= 6 ? "low" : "ok"}>
+                  <StatusBadge tone={p.stock <= 3 ? "critical" : p.stock <= p.threshold ? "low" : "ok"}>
                     {p.stock} {p.unit}s
                   </StatusBadge>
                 </td>
@@ -103,7 +112,7 @@ function ProductsPage() {
   );
 }
 
-function AddProductDialog() {
+function AddProductDialog({ categories }: { categories: string[] }) {
   const [open, setOpen] = useState(false);
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -127,7 +136,7 @@ function AddProductDialog() {
             <label className="block">
               <span className="text-xs font-medium text-foreground/80">Category</span>
               <select className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-ring focus:outline-none">
-                {categories.slice(1).map((c) => (
+                {categories.slice(1).map((c: string) => (
                   <option key={c}>{c}</option>
                 ))}
               </select>

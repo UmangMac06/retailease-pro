@@ -26,6 +26,7 @@ import {
   type Payment,
   type InventoryMovement,
 } from "./indexeddb";
+import { seedIfEmpty } from "./seed-client";
 
 const SESSION_KEY = "re_session";
 
@@ -118,6 +119,9 @@ const mobileSchema = z
 export const NO_ACCOUNT = "NO_ACCOUNT";
 
 export async function login(data: { phone: string; password: string }): Promise<{ ok: boolean }> {
+  // Seed database if empty (creates demo user)
+  await seedIfEmpty();
+  
   const phone = mobileSchema.parse(data.phone);
   const users = await getByIndex<User>(STORES.USERS, "phone", phone);
   const user = users[0];
@@ -139,6 +143,9 @@ export async function signup(data: {
   phone: string;
   password: string;
 }): Promise<{ ok: boolean }> {
+  // Seed database if empty
+  await seedIfEmpty();
+  
   const phone = mobileSchema.parse(data.phone);
   const existing = await getByIndex<User>(STORES.USERS, "phone", phone);
   if (existing.length > 0) {
